@@ -1,0 +1,491 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  const ticket = item.json;\n  item.json.aiAnalysisPrompt = `Bạn là AI Support Operations Analyst. Hãy phân tích ticket sau và CHỈ trả về JSON hợp lệ, không markdown.\\n\\nSchema JSON:\\n{\\n  \"category\": \"bug|incident|feature_request|billing|question\",\\n  \"priority\": \"P0|P1|P2|P3\",\\n  \"sentiment\": \"negative|neutral|positive\",\\n  \"urgencyScore\": 0-100,\\n  \"businessImpact\": \"low|medium|high|critical\",\\n  \"entities\": {\"systems\": [], \"deadline\": \"\", \"stakeholders\": []},\\n  \"summary\": \"tóm tắt 1 câu\",\\n  \"recommendedOwner\": \"Engineering|Customer Success|Sales|Finance\",\\n  \"needsHumanApproval\": true|false\\n}\\n\\nTicket ID:$input.first().json.body.ticketId \\nKhách hàng: $input.first().json.body.customerName\\nKênh: $input.first().json.body.channel\\nSLA giờ: $input.first().json.body.slaHours\\nNội dung: $input.first().json.body.message`;\n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        64
+      ],
+      "id": "0c87f98e-3aac-4d19-9efb-f40c83661b85",
+      "name": "Tạo prompt phân tích"
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  // 1. Lấy chuỗi chữ thô từ node AI Agent trước đó\n  const raw = item.json.output || '{}';\n  \n  let analysis = {};\n  try {\n    // 2. Tìm vị trí dấu { đầu tiên và } cuối cùng để tự động cắt lấy khối JSON bôi đen\n    const startPos = raw.indexOf('{');\n    const endPos = raw.lastIndexOf('}');\n    \n    if (startPos !== -1 && endPos !== -1) {\n      const jsonString = raw.substring(startPos, endPos + 1);\n      analysis = JSON.parse(jsonString);\n    } else {\n      throw new Error(\"Không tìm thấy cấu trúc JSON dạng {} trong chuỗi văn bản.\");\n    }\n  } catch (error) {\n    // Fallback nếu chuỗi hoàn toàn lỗi không thể xử lý\n    analysis = {\n      category: 'incident',\n      priority: 'P1',\n      sentiment: 'negative',\n      urgencyScore: 50,\n      businessImpact: 'medium',\n      entities: { systems: [], deadline: null, stakeholders: [] },\n      summary: 'Lỗi parse dữ liệu thô',\n      recommendedOwner: 'Support',\n      needsHumanApproval: false,\n      parseFallback: true,\n      errorDetail: error.message\n    };\n  }\n\n  // 3. Đưa TẤT CẢ các thuộc tính ra ngoài layer cao nhất của item.json\n  item.json.category = analysis.category;\n  item.json.priority = analysis.priority;\n  item.json.sentiment = analysis.sentiment;\n  item.json.urgencyScore = analysis.urgencyScore;\n  item.json.businessImpact = analysis.businessImpact;\n  item.json.entities = analysis.entities; // Đã thêm bóc tách entities\n  item.json.summary = analysis.summary;\n  item.json.recommendedOwner = analysis.recommendedOwner;\n  item.json.needsHumanApproval = analysis.needsHumanApproval;\n\n  // Giữ lại bản gốc phòng trường hợp cần dùng\n  item.json.analysis = analysis;\n\n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        64
+      ],
+      "id": "e2c44331-3b4f-4106-bd27-310d5fc3d31e",
+      "name": "Parse JSON từ AI"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a9642bbf-5e3e-4bfd-bf2c-3772a674d293",
+              "leftValue": "={{ $json.needsHumanApproval }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        800,
+        64
+      ],
+      "id": "40c0a0d7-3516-4619-9c9d-25e8e36c68ed",
+      "name": "Cần duyệt thủ công?"
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  // 1. Lấy trực tiếp dữ liệu từ item hiện tại (được truyền từ node Parse JSON trước đó)\n  const summary = item.json.summary || 'Sự cố hệ thống';\n  const priority = item.json.priority || 'P0';\n  const businessImpact = item.json.businessImpact || 'high';\n  const owner = item.json.recommendedOwner || 'Customer Success';\n  \n  // Xử lý chuỗi entities để AI dễ đọc hơn\n  const entities = item.json.entities ? JSON.stringify(item.json.entities) : 'Không có';\n\n  // 2. Lấy tên khách hàng từ node Webhook đầu luồng\n  let customerName = 'Quý khách hàng';\n  try {\n    customerName = $(\"Webhook\").first().json.body.customerName || 'Quý khách hàng';\n  } catch (e) {\n    // Nếu không lấy được tên thì giữ mặc định\n  }\n\n  // 3. Truyền các biến thật vào Prompt bằng cú pháp ${biến}\n  item.json.replyPrompt = `Bạn là Customer Success Manager. Viết email phản hồi bằng tiếng Việt, giọng chuyên nghiệp, trấn an khách hàng, có timeline xử lý.\n\nThông tin phân tích:\n- Summary: ${summary}\n- Priority: ${priority}\n- Business impact: ${businessImpact}\n- Owner: ${owner}\n- Entities: ${entities}\n\nYêu cầu email:\n1. Xưng hô lịch sự với ${customerName}\n2. Không hứa quá mức\n3. Có 3 bước xử lý rõ ràng\n4. Có câu xin xác nhận người phụ trách phía khách hàng.\n5. Không dùng bất kỳ ký tự đặc biệt nào khi viết mail, chỉ sử dụng xuống dòng và gạch đầu dòng nếu có liệt kê.\\nLƯU Ý QUAN TRỌNG VỀ CHỮ KÝ CUỐI MAIL:\nTuyệt đối không được bịa tên công ty XYZ hay tên người lạ. Bắt buộc phải ký tên chính xác theo mẫu sau ở cuối mail:\nTrân trọng,\nCông ty ABCDEF\nPhòng Chăm sóc khách hàng\n`;\n\n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        -32
+      ],
+      "id": "b7ade2a6-4d87-4940-8f1d-15a2243474e1",
+      "name": "Prompt email cần duyệt"
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  // 1. Lấy dữ liệu an toàn từ chính item hiện tại (được truyền từ node Parse JSON trước đó)\n  const priority = item.json.priority || 'P1';\n  const summary = item.json.summary || 'Yêu cầu hỗ trợ';\n  \n  // 2. Gọi dữ liệu từ node gốc Webhook một cách chính xác bằng cú pháp ${ ... }\n  let customerName = 'Khách hàng';\n  let ticketMessage = '';\n  \n  try {\n    customerName = $(\"Webhook\").first().json.body.customerName || 'Khách hàng';\n    ticketMessage = $(\"Webhook\").first().json.body.message || '';\n  } catch (e) {\n    // Phòng hờ nếu gọi node Webhook bị lỗi\n    ticketMessage = summary;\n  }\n\n  // 3. Truyền các biến thật vào trong Prompt bằng cú pháp ${biến}\n  item.json.replyPrompt = `Viết email phản hồi ngắn bằng tiếng Việt cho ticket không khẩn cấp.\nSummary: ${summary} (Nội dung chi tiết: ${ticketMessage})\nPriority: ${priority}\nCustomer: ${customerName}\nGiọng văn: thân thiện, rõ ràng, đề xuất bước tiếp theo.\nLưu ý quan trọng: không dùng ký tự chỉ dùng số và gạch đầu dòng để liệt kê. Nói giọng văn như của một chăm sóc khách hàng chuyên nghiệp.\nLƯU Ý QUAN TRỌNG VỀ CHỮ KÝ CUỐI MAIL:\nTuyệt đối không được bịa tên công ty XYZ hay tên người lạ. Bắt buộc phải ký tên chính xác theo mẫu sau ở cuối mail:\nTrân trọng,\nCông ty ABCDEF\nPhòng Chăm sóc khách hàng`;\n  \n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        992,
+        224
+      ],
+      "id": "2d3e75fd-c605-4470-858e-bd5626e22a86",
+      "name": "Prompt email tự động"
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  const analysis = item.json.analysis || {};\n  item.json.taskPrompt = `Từ ticket và phân tích sau, tạo checklist xử lý cho team kỹ thuật dưới dạng JSON array. Mỗi item gồm: title, ownerRole, dueInHours, acceptanceCriteria.\\n\\nTicket: ${item.json.message}\\nAnalysis: ${JSON.stringify(analysis)}.\\nLưu ý quan trọng là trả về tiếng việt`;\n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        -256
+      ],
+      "id": "11a2a9c3-4cf5-44d6-b8c1-0877e9eb7df9",
+      "name": "Prompt checklist xử lý"
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  // 1. Lấy toàn bộ văn bản email từ node AI Agent2 liền trước\n  const fullText = item.json.output || '';\n\n  let subject = '';\n  let body = '';\n\n  // 2. Dùng Regex để tách phần Tiêu đề và phần Nội dung dựa trên cấu trúc text\n  const match = fullText.match(/^\\*\\*Tiêu đề:\\*\\*\\s*(.*?)\\n\\n([\\s\\S]*)$/);\n\n  if (match) {\n    subject = match[1].trim(); // Lấy phần nằm sau \"**Tiêu đề:**\"\n    body = match[2].trim();    // Toàn bộ phần còn lại ở phía dưới\n  } else {\n    // Fallback nếu không khớp định dạng regex\n    subject = \"Thông báo khắc phục lỗi hệ thống (P0)\";\n    body = fullText;\n  }\n\n  // 3. Lấy dữ liệu từ node \"Parse JSON từ AI\" ở phía trước\n  let targetNode;\n  try {\n    targetNode = $(\"Parse JSON từ AI\").first();\n  } catch (e) {\n    targetNode = { json: {} };\n  }\n  \n  // 4. Gộp tất cả lại vào Output mới\n  item.json.email_subject = subject;\n  item.json.email_body = body;\n  \n  // Giữ lại các trường phân tích cũ của bạn\n  item.json.category = targetNode.json.category || 'incident';\n  item.json.priority = targetNode.json.priority || 'P0';\n  item.json.sentiment = targetNode.json.sentiment || 'negative';\n  item.json.urgencyScore = targetNode.json.urgencyScore || null;\n  item.json.businessImpact = targetNode.json.businessImpact || null;\n  item.json.summary = targetNode.json.summary || '';\n  item.json.recommendedOwner = targetNode.json.recommendedOwner || '';\n  item.json.needsHumanApproval = targetNode.json.needsHumanApproval !== undefined ? targetNode.json.needsHumanApproval : false;\n\n  // Xóa bớt trường output cũ cho gọn bảng dữ liệu (tùy chọn)\n  delete item.json.output; \n\n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        64
+      ],
+      "id": "04ded83a-92bf-4561-88d7-3cc0ed73d870",
+      "name": "Đóng gói email phản hồi"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.message }}",
+        "options": {
+          "systemMessage": "={{ $json.aiAnalysisPrompt }}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -192,
+        48
+      ],
+      "id": "da4d41e8-cd3a-49b1-be3a-16cf7b737356",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "llama-3.1-8b-instant",
+          "mode": "list",
+          "cachedResultName": "llama-3.1-8b-instant"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -256,
+        272
+      ],
+      "id": "67f64218-a8a9-4bf3-ae94-9297ff59b31e",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "9PjdR3TiydOIp4CQ",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.body.ticketId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -64,
+        304
+      ],
+      "id": "54fe4904-e2e4-4c5e-a173-6d0fa69d40d6",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.taskPrompt }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        848,
+        -368
+      ],
+      "id": "cfc3ba08-2d68-48eb-bd83-c7f3e846e1d0",
+      "name": "AI Agent1"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "openai/gpt-oss-120b",
+          "mode": "list",
+          "cachedResultName": "openai/gpt-oss-120b"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        848,
+        -128
+      ],
+      "id": "4eb596cb-a1ac-4593-9749-89863f56503c",
+      "name": "OpenAI Chat Model1",
+      "credentials": {
+        "openAiApi": {
+          "id": "9PjdR3TiydOIp4CQ",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.replyPrompt }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1280,
+        80
+      ],
+      "id": "435bf846-e0e6-44cc-9c99-cef1f9bda939",
+      "name": "AI Agent2"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "openai/gpt-oss-120b",
+          "mode": "list",
+          "cachedResultName": "openai/gpt-oss-120b"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1296,
+        288
+      ],
+      "id": "16d39b3c-b1d5-4e54-8f37-2218857999fd",
+      "name": "OpenAI Chat Model2",
+      "credentials": {
+        "openAiApi": {
+          "id": "9PjdR3TiydOIp4CQ",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Webhook').item.json.body.customerEmail }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "text",
+        "message": "={{ $json.email_body }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1888,
+        64
+      ],
+      "id": "924ca682-561f-46f3-808e-c8df214927e3",
+      "name": "Send a message",
+      "webhookId": "a6d95cf7-a6cc-43d7-9819-aaa96b03f524",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "RPXDHGy7O1l0F1w7",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  // 1. Lấy chuỗi JSON từ thuộc tính output của AI Agent1\n  const raw = item.json.output || '[]';\n  \n  let checklist = [];\n  try {\n    // 2. Xóa bỏ ký tự bọc markdown ```json ... ``` nếu có và parse thành mảng\n    checklist = JSON.parse(raw.replace(/^```json|```$/g, '').trim());\n  } catch (error) {\n    // Fallback nếu lỗi định dạng\n    checklist = [\n      {\n        title: \"Lỗi đọc dữ liệu checklist từ AI\",\n        ownerRole: \"Kỹ thuật\",\n        dueInHours: 1,\n        acceptanceCriteria: error.message\n      }\n    ];\n  }\n\n  // 3. Gán mảng đã tách vào trường mới để các node sau (như Slack, Jira) bấm gọi được luôn\n  item.json.tasks_checklist = checklist;\n\n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -368
+      ],
+      "id": "aaa0c0cc-8461-4760-a858-cb4be01e4e08",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "16efbff6-eea2-453f-bd15-f30ebc542366",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -704,
+        48
+      ],
+      "id": "2ee7c2a8-2ac8-4bfd-9be1-120cb40867ba",
+      "name": "Webhook",
+      "webhookId": "16efbff6-eea2-453f-bd15-f30ebc542366"
+    }
+  ],
+  "connections": {
+    "Tạo prompt phân tích": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse JSON từ AI": {
+      "main": [
+        [
+          {
+            "node": "Cần duyệt thủ công?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prompt checklist xử lý",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cần duyệt thủ công?": {
+      "main": [
+        [
+          {
+            "node": "Prompt email cần duyệt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prompt email tự động",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt email cần duyệt": {
+      "main": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt email tự động": {
+      "main": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt checklist xử lý": {
+      "main": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Đóng gói email phản hồi": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse JSON từ AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent2": {
+      "main": [
+        [
+          {
+            "node": "Đóng gói email phản hồi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Tạo prompt phân tích",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f884b26a1e188803895b3da446398a9194165fd77777ce896dd4f2153a39d264"
+  }
+}
