@@ -1,6 +1,6 @@
 # AI_processTiket
 # AI-Powered Multi-Step Ticket Processing Workflow (n8n)
-
+![AI xử lý ticket](images./Untitled.png)
 Hệ thống tự động hóa xử lý ticket và phản hồi khách hàng đa bước bằng cách kết hợp sức mạnh của **n8n** và **AI Agents (OpenAI)**. Workflow này giúp phân loại, phân tích chuyên sâu, tạo checklist xử lý và tự động soạn thảo email phản hồi dựa trên mức độ phức tạp của từng ticket.
 
 ## 📌 Tổng quan tính năng
